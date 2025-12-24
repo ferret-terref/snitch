@@ -1,0 +1,46 @@
+# Snitch Configuration
+
+# Server settings
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+# Download folders - gallery-dl will create site/gallery subfolders within these
+download_folders:
+  - name: "Primary"
+    path: "/path/to/galleries"
+    default: true
+  - name: "Archive"
+    path: "/path/to/archive/galleries"
+    default: false
+
+# gallery-dl settings
+gallery_dl:
+  # Path to gallery-dl executable (leave empty to use 'gallery-dl' from PATH)
+  executable: ""
+  # Additional gallery-dl config file (optional)
+  config_file: ""
+  # Default arguments to pass to gallery-dl
+  default_args:
+    - "--write-metadata"
+
+# StashApp integration
+stashapp:
+  enabled: false
+  url: "http://localhost:9999"
+  api_key: ""
+
+# Database
+database:
+  path: "snitch.db"
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  file: "snitch.log"
+
+# Queue Settings
+queue:
+  max_concurrent_downloads: 3  # How many downloads to run in parallel
+  scan_batch_size: 5           # Trigger Stash scan after this many completed downloads
+  scan_batch_timeout: 60       # OR trigger scan after this many seconds (whichever comes first)
