@@ -38,16 +38,73 @@ class Database:
             await db.execute("""
                 CREATE INDEX IF NOT EXISTS idx_created_at ON downloads(created_at DESC)
             """)
-            
+
+            # Create cookies table for per-domain cookies (e.g., cf_clearance)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS cookies (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    domain TEXT NOT NULL,
+                    cookie_name TEXT NOT NULL,
+                    cookie_value TEXT NOT NULL,
+                    updated_at TIMESTAMP NOT NULL,
+                    UNIQUE(domain, cookie_name)
+                )
+            """)
+
             # Migration: Add gallery_path column if it doesn't exist
             try:
                 await db.execute("SELECT gallery_path FROM downloads LIMIT 1")
             except:
                 logger.info("Adding gallery_path column to existing database")
                 await db.execute("ALTER TABLE downloads ADD COLUMN gallery_path TEXT")
-            
+
             await db.commit()
+
+    async def set_cookie(self, domain: str, cookie_name: str, cookie_value: str):
+        """Insert or update a cookie for a domain."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO cookies (domain, cookie_name, cookie_value, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(domain, cookie_name) DO UPDATE SET
+                    cookie_value=excluded.cookie_value,
+                    updated_at=excluded.updated_at
+                """,
+                (domain, cookie_name, cookie_value, datetime.now())
+            )
+            await db.commit()
+
+    async def get_cookie(self, domain: str, cookie_name: str) -> str | None:
+        """Get a cookie value for a domain."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT cookie_value FROM cookies WHERE domain = ? AND cookie_name = ?",
+                (domain, cookie_name)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else None
+
+    async def get_cookies_for_domain(self, domain: str) -> dict:
+        """Get all cookies for a domain as a dict."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT cookie_name, cookie_value FROM cookies WHERE domain = ?",
+                (domain,)
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return {row[0]: row[1] for row in rows}
     
+    async def delete_cookie(self, domain: str, cookie_name: str) -> bool:
+            """Delete a cookie for a domain and name."""
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute(
+                    "DELETE FROM cookies WHERE domain = ? AND cookie_name = ?",
+                    (domain, cookie_name)
+                )
+                await db.commit()
+                return cursor.rowcount > 0
+            
     async def check_existing_download(self, url: str) -> Optional[DownloadJob]:
         """Check if a URL has already been downloaded."""
         async with aiosqlite.connect(self.db_path) as db:

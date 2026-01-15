@@ -234,6 +234,22 @@
     <div class="container">
       <h1>👀 Snitch</h1>
 
+      <!-- Cookie Management Section -->
+      <div class="section">
+        <h2>Cookie Management</h2>
+        <div class="form-row">
+          <input id="cookieDomainInput" type="text" placeholder="Domain (e.g. example.com)" style="flex:2;" />
+          <button onclick="loadCookiesForDomain()">Load Cookies</button>
+        </div>
+        <div id="cookieList" style="margin-top:10px;"></div>
+        <div class="form-row" style="margin-top:10px;">
+          <input id="cookieNameInput" type="text" placeholder="Cookie Name (e.g. cf_clearance)" style="flex:2;" />
+          <input id="cookieValueInput" type="text" placeholder="Cookie Value" style="flex:3;" />
+          <button onclick="saveCookie()">Save Cookie</button>
+        </div>
+        <div id="cookieMsg" style="color:#4a9eff;margin-top:8px;"></div>
+      </div>
+
       <!-- Add Downloads Section -->
       <div class="section">
         <h2>Add Downloads</h2>
@@ -244,6 +260,31 @@
           </select>
           <button id="submitBtn" onclick="submitDownloads()">Add to Queue</button>
         </div>
+      </div>
+
+      <div class="section">
+        <h2>Import Single Image</h2>
+        <input id="singleImageUrl" type="text" placeholder="Image URL" />
+        <input id="singleImageTags" type="text" placeholder="Tags (comma-separated)" />
+        <select id="singleImageFolder">
+          <option value="">Default Folder</option>
+          <!-- Folder options will be loaded here -->
+        </select>
+        <button id="importImageBtn" onclick="importSingleImage()">Import Image</button>
+      </div>
+
+      <!-- Stash Image Metadata Update Section -->
+      <div class="section">
+        <h2>Update Stash Image Metadata</h2>
+        <input id="stashUpdateUrl" type="text" placeholder="Image URL (must match filename in Stash)" />
+        <input id="stashUpdateTags" type="text" placeholder="Tags (comma-separated)" />
+        <input id="stashUpdatePageUrl" type="text" placeholder="Page URL (optional)" />
+        <select id="stashUpdateFolder">
+          <option value="">Default Folder</option>
+          <!-- Folder options will be loaded here -->
+        </select>
+        <button id="stashUpdateBtn" onclick="updateStashImage()">Update Stash Image</button>
+        <div id="stashUpdateMsg" style="margin-top:8px;font-size:14px;"></div>
       </div>
 
       <!-- Current Queue Section -->
@@ -287,20 +328,30 @@
       const API_BASE = window.location.origin;
 
       // Load folders on page load
+      // Load folders on page load (for all selects)
       async function loadFolders() {
         try {
           const response = await fetch(`${API_BASE}/api/folders`);
           const data = await response.json();
-          const select = document.getElementById('folderSelect');
-
+          const selects = [
+            document.getElementById('folderSelect'),
+            document.getElementById('singleImageFolder'),
+            document.getElementById('stashUpdateFolder')
+          ];
+          selects.forEach(select => {
+            // Remove all except first option
+            while (select.options.length > 1) select.remove(1);
+          });
           data.folders.forEach(folder => {
-            const option = document.createElement('option');
-            option.value = folder.name;
-            option.textContent = `${folder.name} (${folder.path})`;
-            if (folder.default) {
-              option.textContent += ' [Default]';
-            }
-            select.appendChild(option);
+            selects.forEach(select => {
+              const option = document.createElement('option');
+              option.value = folder.name;
+              option.textContent = `${folder.name} (${folder.path})`;
+              if (folder.default) {
+                option.textContent += ' [Default]';
+              }
+              select.appendChild(option);
+            });
           });
         } catch (error) {
           console.error('Failed to load folders:', error);
@@ -333,7 +384,7 @@
               'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-              urls: urls,
+              items: urls.map(url => ({ url, tags: [] })),
               folder: folderSelect.value || null
             })
           });
@@ -455,13 +506,183 @@
       function createJobElement(job, showDelete = false) {
         const deleteBtn = showDelete ? `<button class="delete-btn" onclick="deleteJob(${job.id})">Delete</button>` : '';
         return `
-                <div class="job-item">
-                    <div class="job-url" title="${job.url}">${job.url}</div>
-                    <div class="job-folder">${job.folder_name}</div>
-                    <div class="job-status status-${job.status}">${job.status}${deleteBtn}</div>
-                </div>
-            `;
+          <div class="job-item">
+            <div class="job-url" title="${job.url}">${job.url}</div>
+            <div class="job-folder">${job.folder_name}</div>
+            <div class="job-status status-${job.status}">${job.status}${deleteBtn}</div>
+          </div>
+        `;
       }
+
+      // Import single image by direct link
+      async function importSingleImage() {
+        const url = document.getElementById('singleImageUrl').value.trim();
+        const tagsRaw = document.getElementById('singleImageTags').value.trim();
+        const folder = document.getElementById('singleImageFolder').value || null;
+        const btn = document.getElementById('importImageBtn');
+
+        if (!url) {
+          alert('Please enter an image URL');
+          return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = 'Importing...';
+
+        let tags = [];
+        if (tagsRaw.length > 0) {
+          tags = tagsRaw.split(',').map(t => t.trim()).filter(t => t.length > 0);
+        }
+
+        try {
+          const response = await fetch(`${API_BASE}/api/image/download`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url, tags, folder })
+          });
+          if (response.ok) {
+            document.getElementById('singleImageUrl').value = '';
+            document.getElementById('singleImageTags').value = '';
+            alert('Image import started!');
+          } else {
+            const error = await response.json();
+            alert(`Error: ${error.detail}`);
+          }
+        } catch (error) {
+          alert(`Failed to import image: ${error.message}`);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = 'Import Image';
+        }
+      }
+
+      // --- Cookie Management JS ---
+      async function loadCookiesForDomain() {
+        const domain = document.getElementById('cookieDomainInput').value.trim();
+        const cookieList = document.getElementById('cookieList');
+        const msg = document.getElementById('cookieMsg');
+        msg.textContent = '';
+        if (!domain) {
+          cookieList.innerHTML = '<span style="color:#ff4444">Enter a domain first.</span>';
+          return;
+        }
+        cookieList.innerHTML = 'Loading...';
+        try {
+          const resp = await fetch(`${API_BASE}/api/cookies?domain=${encodeURIComponent(domain)}`);
+          if (!resp.ok) throw new Error('Failed to fetch cookies');
+          const data = await resp.json();
+          if (Object.keys(data.cookies).length === 0) {
+            cookieList.innerHTML = '<span style="color:#888">No cookies stored for this domain.</span>';
+          } else {
+            cookieList.innerHTML = '<b>Cookies:</b><ul style="margin:8px 0 0 18px;">' +
+              Object.entries(data.cookies).map(([k, v]) =>
+                `<li><b>${k}</b>: <span style='word-break:break-all'>${v}</span> <button style="margin-left:8px;color:#fff;background:#ff4444;border:none;border-radius:3px;padding:2px 6px;cursor:pointer;font-size:11px;" onclick="deleteCookie('${domain}','${k}')">Delete</button></li>`
+              ).join('') + '</ul>';
+          }
+        } catch (e) {
+          cookieList.innerHTML = `<span style='color:#ff4444'>${e.message}</span>`;
+        }
+      }
+
+      async function deleteCookie(domain, name) {
+        const msg = document.getElementById('cookieMsg');
+        msg.textContent = '';
+        if (!domain || !name) return;
+        if (!confirm(`Delete cookie '${name}' for domain '${domain}'?`)) return;
+        try {
+          const resp = await fetch(`${API_BASE}/api/cookies?domain=${encodeURIComponent(domain)}&cookie_name=${encodeURIComponent(name)}`, {
+            method: 'DELETE'
+          });
+          if (!resp.ok) throw new Error('Failed to delete cookie');
+          msg.textContent = 'Cookie deleted!';
+          msg.style.color = '#00ff88';
+          loadCookiesForDomain();
+        } catch (e) {
+          msg.textContent = e.message;
+          msg.style.color = '#ff4444';
+        }
+      }
+
+      async function saveCookie() {
+        const domain = document.getElementById('cookieDomainInput').value.trim();
+        const name = document.getElementById('cookieNameInput').value.trim();
+        const value = document.getElementById('cookieValueInput').value.trim();
+        const msg = document.getElementById('cookieMsg');
+        if (!domain || !name || !value) {
+          msg.textContent = 'Please enter domain, name, and value.';
+          msg.style.color = '#ff4444';
+          return;
+        }
+        msg.textContent = 'Saving...';
+        msg.style.color = '#4a9eff';
+        try {
+          const resp = await fetch(`${API_BASE}/api/cookies`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ domain, cookie_name: name, cookie_value: value })
+          });
+          if (!resp.ok) throw new Error('Failed to save cookie');
+          msg.textContent = 'Cookie saved!';
+          msg.style.color = '#00ff88';
+          loadCookiesForDomain();
+        } catch (e) {
+          msg.textContent = e.message;
+          msg.style.color = '#ff4444';
+        }
+      }
+
+      // Update Stash image metadata (tags, url) by filename
+      async function updateStashImage() {
+        const url = document.getElementById('stashUpdateUrl').value.trim();
+        const tagsRaw = document.getElementById('stashUpdateTags').value.trim();
+        const folder = document.getElementById('stashUpdateFolder').value || null;
+        const page_url = document.getElementById('stashUpdatePageUrl').value.trim() || null;
+        const btn = document.getElementById('stashUpdateBtn');
+        const msg = document.getElementById('stashUpdateMsg');
+
+        msg.textContent = '';
+        msg.style.color = '#4a9eff';
+
+        if (!url) {
+          msg.textContent = 'Please enter an image URL.';
+          msg.style.color = '#ff4444';
+          return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = 'Updating...';
+
+        let tags = [];
+        if (tagsRaw.length > 0) {
+          tags = tagsRaw.split(',').map(t => t.trim()).filter(t => t.length > 0);
+        }
+
+        try {
+          const response = await fetch(`${API_BASE}/api/image/stash-update`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url, tags, folder, page_url })
+          });
+          if (response.ok) {
+            msg.textContent = 'Stash image updated!';
+            msg.style.color = '#00ff88';
+            document.getElementById('stashUpdateUrl').value = '';
+            document.getElementById('stashUpdateTags').value = '';
+            document.getElementById('stashUpdatePageUrl').value = '';
+          } else {
+            const error = await response.json();
+            msg.textContent = `Error: ${error.detail}`;
+            msg.style.color = '#ff4444';
+          }
+        } catch (error) {
+          msg.textContent = `Failed: ${error.message}`;
+          msg.style.color = '#ff4444';
+        } finally {
+          btn.disabled = false;
+          btn.textContent = 'Update Stash Image';
+        }
+      }
+
 
       // Auto-refresh queue every 3 seconds
       setInterval(loadQueue, 3000);

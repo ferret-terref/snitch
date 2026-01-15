@@ -8,10 +8,13 @@ from typing import Optional
 from pydantic import BaseModel
 
 
-# Restored DownloadRequest for legacy API compatibility
+class DownloadRequestItem(BaseModel):
+    url: str
+    tags: Optional[list[str]] = None
+    
 class DownloadRequest(BaseModel):
     """Request model for submitting downloads."""
-    urls: list[str]
+    items: list[DownloadRequestItem]
     folder: Optional[str] = None  # If None, uses default folder
 
 
@@ -24,14 +27,12 @@ class DownloadStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
 
-
-
 class SingleImageDownloadRequest(BaseModel):
     """Request model for single image download."""
     url: str
     tags: Optional[list[str]] = None
     folder: Optional[str] = None
-
+    page_url: Optional[str] = None
 
 class BulkImageDownloadRequest(BaseModel):
     """Request model for bulk image download."""
@@ -76,3 +77,8 @@ class HistoryResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+class CookieSetRequest(BaseModel):
+    domain: str
+    cookie_name: str
+    cookie_value: str

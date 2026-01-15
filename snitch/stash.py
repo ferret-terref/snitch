@@ -1,3 +1,4 @@
+
 """StashApp integration."""
 
 import logging
@@ -6,7 +7,6 @@ from typing import Optional
 import httpx
 
 logger = logging.getLogger(__name__)
-
 
 class StashClient:
     def __init__(self, url: str, api_key: str = ""):
@@ -31,12 +31,12 @@ class StashClient:
         
         # Build scan input
         scan_input = {
-            "scanGenerateClipPreviews": True,
+            "scanGenerateClipPreviews": False,
             "scanGenerateCovers": True,
             "scanGenerateImagePreviews": False,
             "scanGeneratePhashes": True,
-            "scanGeneratePreviews": True,
-            "scanGenerateSprites": True,
+            "scanGeneratePreviews": False,
+            "scanGenerateSprites": False,
             "scanGenerateThumbnails": False,
         }
         
@@ -617,3 +617,476 @@ class StashClient:
             logger.error(f"Failed to update gallery: {e}")
             return False
 
+    async def find_image_by_filename(self, filename: str) -> dict:
+        """
+        Search for an image in Stash by filename (using FindImages with q=filename).
+        Returns the first matching image dict, or None.
+        """
+        
+        query = """
+query FindImages($filter: FindFilterType, $image_filter: ImageFilterType, $image_ids: [Int!]) {
+    findImages(filter: $filter, image_filter: $image_filter, image_ids: $image_ids) {
+        count
+        megapixels
+        filesize
+        images {
+            ...SlimImageData
+            __typename
+        }
+        __typename
+    }
+}
+
+fragment SlimImageData on Image {
+    id
+    title
+    code
+    date
+    urls
+    details
+    photographer
+    rating100
+    organized
+    o_counter
+    paths {
+        thumbnail
+        preview
+        image
+        __typename
+    }
+    galleries {
+        id
+        title
+        files {
+            path
+            __typename
+        }
+        folder {
+            path
+            __typename
+        }
+        __typename
+    }
+    studio {
+        id
+        name
+        image_path
+        __typename
+    }
+    tags {
+        id
+        name
+        __typename
+    }
+    performers {
+        id
+        name
+        gender
+        favorite
+        image_path
+        __typename
+    }
+    visual_files {
+        ...VisualFileData
+        __typename
+    }
+    __typename
+}
+
+fragment VisualFileData on VisualFile {
+    ... on BaseFile {
+        id
+        path
+        size
+        mod_time
+        fingerprints {
+            type
+            value
+            __typename
+        }
+        __typename
+    }
+    ... on ImageFile {
+        id
+        path
+        size
+        mod_time
+        width
+        height
+        fingerprints {
+            type
+            value
+            __typename
+        }
+        __typename
+    }
+    ... on VideoFile {
+        id
+        path
+        size
+        mod_time
+        duration
+        video_codec
+        audio_codec
+        width
+        height
+        frame_rate
+        bit_rate
+        fingerprints {
+            type
+            value
+            __typename
+        }
+        __typename
+    }
+    __typename
+}
+"""
+        variables = {
+            "filter": {
+                "q": filename,
+                "page": 1,
+                "per_page": 40,
+                "sort": "file_mod_time",
+                "direction": "DESC"
+            },
+            "image_filter": {}
+        }
+        payload = {
+            "operationName": "FindImages",
+            "variables": variables,
+            "query": query
+        }
+        
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["ApiKey"] = self.api_key
+        
+        # Debug: log filename and payload
+        logger.debug(f"find_image_by_filename: filename={filename}")
+        logger.debug(f"find_image_by_filename: payload={payload}")
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.url}/graphql",
+                    json=payload,
+                    headers=headers,
+                    timeout=10.0
+                )
+                response.raise_for_status()
+                data = response.json()
+                
+                logger.debug(f"find_image_by_filename: status={response.status_code}, response={response.text}")
+                
+                images = data.get("data", {}).get("findImages", {}).get("images", [])
+                for img in images:
+                    for vf in img.get("visual_files", []):
+                        if filename in vf.get("path", ""):
+                            return img
+                return None
+        except Exception as e:
+            logger.error(f"Failed to find image by filename: {e}")
+            return None
+
+    async def tag_image(
+            self,
+            image_id: str,
+            tag_ids: list[str],
+            page_url: Optional[str] = None
+        ) -> bool:
+            """
+            Tag an image in Stash by image_id and tag_ids.
+            Args:
+                image_id: Stash image ID
+                tag_ids: List of tag IDs to assign
+            Returns:
+                True if successful
+            """
+            
+            mutation = """
+            mutation ImageUpdate($input: ImageUpdateInput!) {
+                imageUpdate(input: $input) {
+                    id
+                    tags { id name }
+                    url
+                }
+            }
+            """
+            
+            url = page_url
+            if not url:
+                url = ""
+
+            update_input = {
+                "id": image_id,
+                "tag_ids": tag_ids,
+                "url": url
+            }
+
+            payload = {
+                "operationName": "ImageUpdate",
+                "variables": {
+                    "input": update_input
+                },
+                "query": mutation
+            }
+
+            headers = {
+                "Content-Type": "application/json"
+            }
+            if self.api_key:
+                headers["ApiKey"] = self.api_key
+
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        f"{self.url}/graphql",
+                        json=payload,
+                        headers=headers,
+                        timeout=10.0
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    if data.get("errors"):
+                        logger.error(f"Failed to tag image: {data['errors']}")
+                        return False
+                    logger.info(f"Tagged image {image_id} with {len(tag_ids)} tag(s)")
+                    return True
+            except Exception as e:
+                logger.error(f"Failed to tag image: {e}")
+                return False
+                
+    async def find_scene_by_filename(self, filename: str) -> Optional[dict]:
+        """
+        Search for a scene in Stash by filename (using FindScenes with q=filename).
+        Returns the first matching scene dict, or None.
+        """
+        query = '''
+query FindScenes($filter: FindFilterType, $scene_filter: SceneFilterType, $scene_ids: [Int!]) {
+    findScenes(filter: $filter, scene_filter: $scene_filter, scene_ids: $scene_ids) {
+        count
+        filesize
+        duration
+        scenes {
+            ...SlimSceneData
+            __typename
+        }
+        __typename
+    }
+}
+
+fragment SlimSceneData on Scene {
+    id
+    title
+    code
+    details
+    director
+    urls
+    date
+    rating100
+    o_counter
+    organized
+    interactive
+    interactive_speed
+    resume_time
+    play_duration
+    play_count
+    files {
+        ...VideoFileData
+        __typename
+    }
+    paths {
+        screenshot
+        preview
+        stream
+        webp
+        vtt
+        sprite
+        funscript
+        interactive_heatmap
+        caption
+        __typename
+    }
+    scene_markers {
+        id
+        title
+        seconds
+        primary_tag {
+            id
+            name
+            __typename
+        }
+        __typename
+    }
+    galleries {
+        id
+        files {
+            path
+            __typename
+        }
+        folder {
+            path
+            __typename
+        }
+        title
+        __typename
+    }
+    studio {
+        id
+        name
+        image_path
+        __typename
+    }
+    groups {
+        group {
+            id
+            name
+            front_image_path
+            __typename
+        }
+        scene_index
+        __typename
+    }
+    tags {
+        id
+        name
+        __typename
+    }
+    performers {
+        id
+        name
+        disambiguation
+        gender
+        favorite
+        image_path
+        __typename
+    }
+    stash_ids {
+        endpoint
+        stash_id
+        updated_at
+        __typename
+    }
+    __typename
+}
+
+fragment VideoFileData on VideoFile {
+    id
+    path
+    size
+    mod_time
+    duration
+    video_codec
+    audio_codec
+    width
+    height
+    frame_rate
+    bit_rate
+    fingerprints {
+        type
+        value
+        __typename
+    }
+    __typename
+}
+    '''
+        variables = {
+                "filter": {
+                        "q": filename,
+                        "page": 1,
+                        "per_page": 40,
+                        "sort": "file_mod_time",
+                        "direction": "DESC"
+                },
+                "scene_filter": {}
+        }
+        payload = {
+                "operationName": "FindScenes",
+                "variables": variables,
+                "query": query
+        }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+                headers["ApiKey"] = self.api_key
+        logger.debug(f"find_scene_by_filename: filename={filename}")
+        logger.debug(f"find_scene_by_filename: payload={payload}")
+        try:
+            async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                            f"{self.url}/graphql",
+                            json=payload,
+                            headers=headers,
+                            timeout=10.0
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    logger.debug(f"find_scene_by_filename: status={response.status_code}, response={response.text}")
+                    scenes = data.get("data", {}).get("findScenes", {}).get("scenes", [])
+                    for scene in scenes:
+                            for vf in scene.get("files", []):
+                                    if filename in vf.get("path", ""):
+                                            return scene
+                    return None
+        except Exception as e:
+                logger.error(f"Failed to find scene by filename: {e}")
+                return None
+            
+    async def tag_scene(
+            self,
+            scene_id: str,
+            tag_ids: list[str],
+            page_url: Optional[str] = None
+        ) -> bool:
+            """
+            Tag a scene in Stash by scene_id and tag_ids.
+            Args:
+                scene_id: Stash scene ID
+                tag_ids: List of tag IDs to assign
+                page_url: Optional URL to set
+            Returns:
+                True if successful
+            """
+            mutation = '''
+            mutation SceneUpdate($input: SceneUpdateInput!) {
+                sceneUpdate(input: $input) {
+                    id
+                    tags { id name }
+                    url
+                }
+            }
+            '''
+            url = page_url if page_url else ""
+            update_input = {
+                "id": scene_id,
+                "tag_ids": tag_ids,
+                "url": url
+            }
+            payload = {
+                "operationName": "SceneUpdate",
+                "variables": {
+                    "input": update_input
+                },
+                "query": mutation
+            }
+            headers = {"Content-Type": "application/json"}
+            if self.api_key:
+                headers["ApiKey"] = self.api_key
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        f"{self.url}/graphql",
+                        json=payload,
+                        headers=headers,
+                        timeout=10.0
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    if data.get("errors"):
+                        logger.error(f"Failed to tag scene: {data['errors']}")
+                        return False
+                    logger.info(f"Tagged scene {scene_id} with {len(tag_ids)} tag(s)")
+                    return True
+            except Exception as e:
+                logger.error(f"Failed to tag scene: {e}")
+                return False
