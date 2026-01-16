@@ -7,6 +7,7 @@ from typing import Optional
 
 import aiohttp
 
+from . import helpers
 from .config import GalleryDlConfig
 
 logger = logging.getLogger(__name__)
@@ -18,7 +19,6 @@ async def download_image_direct(url: str, folder: str = None, tags: list[str] = 
     Returns dict with file path and tags.
     """
 
-    import re
     from datetime import datetime
 
     from .api import database, stash_client
@@ -27,36 +27,20 @@ async def download_image_direct(url: str, folder: str = None, tags: list[str] = 
     logger.info(f"Starting image download: url={url}, folder={folder}, tags={tags}")
     base_dir = Path(folder) if folder else Path.cwd() / "downloads"
     base_dir.mkdir(parents=True, exist_ok=True)
-    filename = url.split("/")[-1].split("?")[0] or f"image_{datetime.now().timestamp()}.jpg"
+    filename = helpers.extract_filename_from_url(url, default=f"image_{datetime.now().timestamp()}.jpg")
     file_path = base_dir / filename
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:146.0) Gecko/20100101 Firefox/146.0",
-        "Accept": "image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-GB,en;q=0.5",
-        "Accept-Encoding": "gzip, deflate, br, zstd",
-        "Connection": "keep-alive",
-        "Referer": url,
-        "Priority": "u=0, i",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "same-site",
-        "Sec-Fetch-User": "?1",
-        "Upgrade-Insecure-Requests": "1",
-        "Cache-Control": "no-cache"
-    }
+    headers = helpers.build_default_headers(referer=url)
 
     # --- Cookie handling ---
     # Extract domain from URL
-    domain_match = re.match(r"https?://([^/]+)", url)
-    domain = domain_match.group(1) if domain_match else None
+    domain = helpers.extract_domain(url)
     cookies = {}
     if domain and database:
         cookies = await database.get_cookies_for_domain(domain)
         if cookies:
-            cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items())
-            headers["Cookie"] = cookie_header
-            logger.info(f"Using cookies for {domain}: {cookie_header}")
+            headers["Cookie"] = helpers.format_cookies_header(cookies)
+            logger.info(f"Using cookies for {domain}: {headers['Cookie']}")
 
     logger.debug(f"Request headers: {headers}")
 
@@ -85,8 +69,8 @@ async def download_image_direct(url: str, folder: str = None, tags: list[str] = 
                         # Accept both 200 (full) and 206 (partial) responses
                         if resp.status not in [200, 206]:
                             text = await resp.text()
-                            # Detect Cloudflare block (simple heuristic)
-                            if resp.status == 403 and ("cloudflare" in text.lower() or "cf-ray" in resp.headers or "cf_clearance" in text.lower()):
+                            # Detect Cloudflare block
+                            if helpers.is_cloudflare_block(resp.status, text, resp.headers):
                                 logger.warning(f"Cloudflare block detected for {url} (domain: {domain})")
                                 logger.error(f"Response text: {text}")
                                 raise Exception(f"Cloudflare block detected. Please provide the 'cf_clearance' cookie for {domain} via the UI.")
@@ -100,7 +84,7 @@ async def download_image_direct(url: str, folder: str = None, tags: list[str] = 
                             logger.info(f"Image GET {url} status: {resp.status}")
                             logger.info(f"Response Content-Type: {content_type}, Content-Length: {content_length}")
                             
-                            if not (content_type.startswith("image/") or content_type.startswith("video/")):
+                            if not helpers.is_media_content_type(content_type):
                                 # Read a small preview of the response for logging
                                 preview = await resp.content.read(256)
                                 logger.error(f"URL did not return an image. Content-Type: {content_type}, preview: {preview[:100]!r}")
@@ -170,7 +154,7 @@ async def download_image_direct(url: str, folder: str = None, tags: list[str] = 
             await stash_client.wait_for_scan_completion(job_id, timeout=300)
             # Determine file type
             ext = filename.split('.')[-1].lower()
-            if ext in ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "avif"]:
+            if helpers.is_image_extension(f".{ext}"):
                 await tagger.tag_image_by_filename(filename, tags, page_url)
                 logger.info(f"Tagged image in Stash: {filename} with tags: {tags}")
             else:
@@ -301,12 +285,8 @@ class GalleryDownloader:
                 try:
                     if path_file.exists():
                         downloaded_folder = path_file.read_text(encoding='utf-8').strip()
-                        # Clean up the path - remove quotes and extended-length prefix
-                        downloaded_folder = downloaded_folder.strip('"').strip("'")
-                        if downloaded_folder.startswith('\\\\?\\'):
-                            downloaded_folder = downloaded_folder[4:]
-                        # Remove trailing backslash/slash
-                        downloaded_folder = downloaded_folder.rstrip('\\/')
+                        # Clean up the path
+                        downloaded_folder = helpers.clean_path(downloaded_folder)
                         logger.info(f"Read folder path from temp file: {downloaded_folder}")
                         # Clean up the temp file
                         path_file.unlink()

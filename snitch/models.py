@@ -5,19 +5,10 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
-class DownloadRequestItem(BaseModel):
-    url: str
-    tags: Optional[list[str]] = None
-    
-class DownloadRequest(BaseModel):
-    """Request model for submitting downloads."""
-    items: list[DownloadRequestItem]
-    folder: Optional[str] = None  # If None, uses default folder
-
-
+# === ENUMS ===
 class DownloadStatus(str, Enum):
     PENDING = "pending"
     DOWNLOADING = "downloading"
@@ -26,32 +17,51 @@ class DownloadStatus(str, Enum):
     UPDATING = "updating"
     COMPLETED = "completed"
     FAILED = "failed"
-
-class SingleImageDownloadRequest(BaseModel):
-    """Request model for single image download."""
+    
+    
+# === Request Models ===
+class DownloadItem(BaseModel):
+    """Individual item to download (gallery or image)."""
     url: str
     tags: Optional[list[str]] = None
-    folder: Optional[str] = None
-    page_url: Optional[str] = None
+    page_url: Optional[str] = None  # Source page URL for context
 
-class BulkImageDownloadRequest(BaseModel):
-    """Request model for bulk image download."""
-    urls: list[str]
+class DownloadRequest(BaseModel):
+    """Unified request for downloading galleries or images."""
+    items: list[DownloadItem]
+    folder: Optional[str] = None  # Folder name or path; uses default if None
+
+class StashUpdateRequest(BaseModel):
+    """Request to update metadata in Stash without downloading."""
+    url: str  # Image URL (for filename extraction)
     tags: Optional[list[str]] = None
-    folder: Optional[str] = None
-    subfolder: Optional[str] = None
-    rename: Optional[bool] = False
+    page_url: Optional[str] = None
+    folder: Optional[str] = None  # For determining scan path
 
+
+class CookieSetRequest(BaseModel):
+    """Request to set a cookie for a domain."""
+    domain: str
+    cookie_name: str
+    cookie_value: str
+
+
+class StashScanRequest(BaseModel):
+    """Request to trigger a Stash library scan."""
+    paths: Optional[list[str]] = None  # Specific paths to scan
+    scan_all: bool = False  # If True, scans all Stash paths
+
+# ===== Response Models =====
 
 class DownloadResponse(BaseModel):
-    """Response model for download submission."""
+    """Response for download submission."""
     added: int
     skipped: int
-    duplicates: list[dict]
-
+    duplicates: list[dict] = Field(default_factory=list)
+    errors: Optional[list[dict]] = None
 
 class DownloadJob(BaseModel):
-    """Download job record."""
+    """Download job record from database."""
     id: int
     url: str
     folder_name: str
@@ -63,13 +73,11 @@ class DownloadJob(BaseModel):
     completed_at: Optional[datetime] = None
     error_message: Optional[str] = None
 
-
 class QueueResponse(BaseModel):
     """Response for queue status."""
     pending: list[DownloadJob]
     downloading: list[DownloadJob]
     total: int
-
 
 class HistoryResponse(BaseModel):
     """Response for download history."""
@@ -78,7 +86,10 @@ class HistoryResponse(BaseModel):
     limit: int
     offset: int
 
-class CookieSetRequest(BaseModel):
-    domain: str
-    cookie_name: str
-    cookie_value: str
+class StashUpdateResponse(BaseModel):
+    """Response for Stash metadata update."""
+    success: bool
+    image_id: Optional[str] = None
+    tags: list[str] = Field(default_factory=list)
+    page_url: Optional[str] = None
+    error: Optional[str] = None
