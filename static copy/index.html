@@ -291,7 +291,7 @@
       <div class="section">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
           <h2 style="margin-bottom: 0;">Current Queue</h2>
-          <button class="refresh-btn" onclick="loadQueueAndHistory()">🔄 Refresh</button>
+          <button class="refresh-btn" onclick="loadQueue()">🔄 Refresh</button>
         </div>
         <div class="stats">
           <div class="stat">
@@ -313,7 +313,7 @@
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
           <h2 style="margin-bottom: 0;">History</h2>
           <div>
-            <button class="refresh-btn" onclick="loadQueueAndHistory()">🔄 Refresh</button>
+            <button class="refresh-btn" onclick="loadHistory()">🔄 Refresh</button>
             <button class="refresh-btn" style="background: #ff4444; margin-left: 8px;" onclick="clearAllHistory()">🗑️
               Clear All</button>
           </div>
@@ -378,7 +378,7 @@
         submitBtn.textContent = 'Adding...';
 
         try {
-          const response = await fetch(`${API_BASE}/api/v2/download`, {
+          const response = await fetch(`${API_BASE}/api/download`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -414,10 +414,6 @@
           submitBtn.disabled = false;
           submitBtn.textContent = 'Add to Queue';
         }
-      }
-
-      async function loadQueueAndHistory() {
-        await Promise.all([loadQueue(), loadHistory()]);
       }
 
       // Load queue
@@ -539,7 +535,7 @@
         }
 
         try {
-          const response = await fetch(`${API_BASE}/api/v2/download`, {
+          const response = await fetch(`${API_BASE}/api/download`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({

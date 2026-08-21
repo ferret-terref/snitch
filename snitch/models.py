@@ -23,6 +23,7 @@ class DownloadStatus(str, Enum):
 class DownloadItem(BaseModel):
     """Individual item to download (gallery or image)."""
     url: str
+    title: Optional[str] = None
     tags: Optional[list[str]] = None
     page_url: Optional[str] = None  # Source page URL for context
 
@@ -31,12 +32,18 @@ class DownloadRequest(BaseModel):
     items: list[DownloadItem]
     folder: Optional[str] = None  # Folder name or path; uses default if None
 
-class StashUpdateRequest(BaseModel):
-    """Request to update metadata in Stash without downloading."""
-    url: str  # Image URL (for filename extraction)
-    tags: Optional[list[str]] = None
-    page_url: Optional[str] = None
-    folder: Optional[str] = None  # For determining scan path
+
+class StashUpdateRequest(DownloadRequest):
+    """Request to update Stash metadata for multiple items."""
+    pass
+
+
+#class StashUpdateRequest(BaseModel):
+#    """Request to update metadata in Stash without downloading."""
+#    url: str  # Image URL (for filename extraction)
+#    tags: Optional[list[str]] = None
+#    page_url: Optional[str] = None
+#    folder: Optional[str] = None  # For determining scan path
 
 
 class CookieSetRequest(BaseModel):
@@ -57,6 +64,19 @@ class DownloadResponse(BaseModel):
     """Response for download submission."""
     added: int
     skipped: int
+    duplicates: list[dict] = Field(default_factory=list)
+    errors: Optional[list[dict]] = None
+
+class DownloadTestResult(BaseModel):
+    """Single item resolver result for test mode."""
+    url: str
+    downloader: Optional[str] = None
+    reason: Optional[str] = None
+    error: Optional[str] = None
+
+class DownloadTestResponse(BaseModel):
+    """Response for download test mode."""
+    results: list[DownloadTestResult]
     duplicates: list[dict] = Field(default_factory=list)
     errors: Optional[list[dict]] = None
 

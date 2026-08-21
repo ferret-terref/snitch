@@ -10,13 +10,16 @@ from .config import load_config
 
 def setup_logging(config):
     """Configure logging."""
+    level_name = (config.logging.level or "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
     logging.basicConfig(
-        level=getattr(logging, config.logging.level),
+        level=level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[
             logging.FileHandler(config.logging.file),
             logging.StreamHandler()
-        ]
+        ],
+        force=True,
     )
     
     # Suppress uvicorn access logs
@@ -25,6 +28,9 @@ def setup_logging(config):
     
     # Suppress httpx HTTP request logs
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    
+    # Suppress noisy aiosqlite debug logs
+    logging.getLogger("aiosqlite").setLevel(logging.WARNING)
 
 
 def main():

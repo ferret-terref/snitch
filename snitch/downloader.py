@@ -2,18 +2,20 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 from pathlib import Path
 from typing import Optional
 
 import aiohttp
+from gallery_dl import config, job
 
 from . import helpers
-from .config import GalleryDlConfig
+from .config import GalleryDlConfig, get_executable_dir
 
 logger = logging.getLogger(__name__)
 
 # Async function to download a single image from a direct URL
-async def download_image_direct(url: str, folder: str = None, tags: list[str] = None, page_url: str = None) -> dict:
+async def download_image_direct(url: str, folder: str = None, tags: list[str] = None, page_url: str = None, title: str = None) -> dict:
     """
     Download a single image from a direct URL, save to folder, and optionally send tags to Stash.
     Returns dict with file path and tags.
@@ -62,7 +64,7 @@ async def download_image_direct(url: str, folder: str = None, tags: list[str] = 
                     request_headers["Range"] = f"bytes={bytes_downloaded}-"
                     logger.info(f"Resuming download from byte {bytes_downloaded}")
                 
-                async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with aiohttp.ClientSession(timeout=timeout, connector=aiohttp.TCPConnector(verify_ssl=False)) as session:
                     async with session.get(url, headers=request_headers) as resp:
                         logger.info(f"Retry {retry + 1}: HTTP {resp.status}, Content-Range: {resp.headers.get('Content-Range', 'N/A')}")
                         
@@ -74,7 +76,13 @@ async def download_image_direct(url: str, folder: str = None, tags: list[str] = 
                                 logger.warning(f"Cloudflare block detected for {url} (domain: {domain})")
                                 logger.error(f"Response text: {text}")
                                 raise Exception(f"Cloudflare block detected. Please provide the 'cf_clearance' cookie for {domain} via the UI.")
-                            logger.error(f"Failed to download image: HTTP {resp.status}, response: {text}")
+                            # Special handling for 404 with HTML (expired/invalid auto-download link)
+                            content_type = resp.headers.get("Content-Type", "").lower()
+                            if resp.status == 404 and "html" in content_type:
+                                preview = text[:200].replace('\n', ' ')
+                                logger.error(f"Failed to download image: HTTP 404 (likely expired or invalid auto-download link). Preview: {preview!r}")
+                                raise Exception("Download link returned 404 Not Found and HTML content. This usually means the link has expired or is invalid. For DeviantArt, try refreshing the page and getting a new download link.")
+                            logger.error(f"Failed to download image: HTTP {resp.status}, response: {text[:200]!r}")
                             raise Exception(f"Failed to download image: HTTP {resp.status}")
 
                         content_type = resp.headers.get("Content-Type", "").lower()
@@ -83,9 +91,14 @@ async def download_image_direct(url: str, folder: str = None, tags: list[str] = 
                         if retry == 0:
                             logger.info(f"Image GET {url} status: {resp.status}")
                             logger.info(f"Response Content-Type: {content_type}, Content-Length: {content_length}")
-                            
+
+                            # If the content type is HTML, it's likely an error page (expired link, etc.)
+                            if "html" in content_type:
+                                preview = await resp.content.read(256)
+                                logger.error(f"URL returned HTML instead of an image. This may be an expired or invalid auto-download link. Content-Type: {content_type}, preview: {preview[:100]!r}")
+                                raise Exception(f"URL returned HTML instead of an image. The link may have expired or require authentication. (Content-Type: {content_type})")
+
                             if not helpers.is_media_content_type(content_type):
-                                # Read a small preview of the response for logging
                                 preview = await resp.content.read(256)
                                 logger.error(f"URL did not return an image. Content-Type: {content_type}, preview: {preview[:100]!r}")
                                 raise Exception(f"URL did not return an image. Content-Type: {content_type}")
@@ -147,15 +160,14 @@ async def download_image_direct(url: str, folder: str = None, tags: list[str] = 
         raise
 
     # Send tags to Stash if available and tags provided
-    if tags and stash_client:
+    if stash_client:
         tagger = StashTagger(stash_client)
         try:
             job_id = await stash_client.trigger_scan([str(base_dir)])
             await stash_client.wait_for_scan_completion(job_id, timeout=300)
-            # Determine file type
-            ext = filename.split('.')[-1].lower()
-            if helpers.is_image_extension(f".{ext}"):
-                await tagger.tag_image_by_filename(filename, tags, page_url)
+            # Determine file type using the full filename
+            if helpers.is_image_extension(filename):
+                await tagger.tag_image_by_filename(filename, tags, page_url, title)
                 logger.info(f"Tagged image in Stash: {filename} with tags: {tags}")
             else:
                 await tagger.tag_scene_by_filename(filename, tags, page_url)
@@ -185,126 +197,55 @@ class GalleryDownloader:
         Returns:
             (success: bool, error_message: Optional[str], downloaded_folder: Optional[str])
         """
-        # Create temp directory for path output
-        temp_dir = Path("C:/Temp/gallery-dl")
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        path_file = temp_dir / f"{job_id}-path.txt"
-        
-        # Remove old path file if it exists
-        if path_file.exists():
-            path_file.unlink()
-        
-        # Build gallery-dl command
-        import sys
-        if sys.platform == "win32":
-            write_path_wrapper = Path(__file__).parent / "write_path_wrapper.bat"
-            # NO quotes - will be passed as single argument
-            exec_cmd = f"{write_path_wrapper} {{_directory}} {path_file}"
-        else:
-            write_path_script = Path(__file__).parent / "write_path.py"
-            exec_cmd = f'python "{write_path_script}" "{{_directory}}" "{path_file}"'
-        
-        # Build command list
-        cmd = [self.config.executable]
-        
-        # Add config file if specified
-        if self.config.config_file:
-            logger.info(f"Using config file: {self.config.config_file}")
-            cmd.extend(["--config", self.config.config_file])
-        else:
-            logger.info("No config file specified, using gallery-dl defaults")
-        
-        # Add default arguments
-        if self.config.default_args:
-            logger.info(f"Using default args: {self.config.default_args}")
-            cmd.extend(self.config.default_args)
-        
-        # Add destination, exec-after, and URL
-        cmd.extend([
-            "--destination", destination,
-            "--exec-after", exec_cmd,
-            url
-        ])
-        
-        cmd_str = ' '.join(cmd)
-        logger.info(f"Running gallery-dl: {cmd_str}")
-        logger.info(f"Command list (raw): {cmd}")
+        logger.info(f"Downloading gallery: {url} -> {destination}")
         
         try:
-            # Use exec on Windows for better compatibility
-            if sys.platform == "win32":
-                env = os.environ.copy()
-                env["PYTHONUTF8"] = "1"
-                env["PYTHONIOENCODING"] = "utf-8"
-                
-                logger.info(f"Executing command with create_subprocess_exec: {cmd}")
+            
+            from gallery_dl import config as gallery_config
 
-                # Use exec directly - pass arguments as list (no shell interpretation)
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=env,
-                )
-            else:
-                # Unix systems can use exec directly
-                logger.debug(f"Executing command string on unix: {cmd}")
-
-                process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
+            # Load gallery-dl config
+            gallery_config.load()
+            if self.config.config_file:
+                gallery_config.load(self.config.config_file)
             
-            # Read and log output live
-            async def log_stream(stream, name):
-                """Read from stream line by line and log it."""
-                lines = []
-                while True:
-                    line = await stream.readline()
-                    if not line:
-                        break
-                    decoded = line.decode('utf-8', errors='replace').rstrip()
-                    if decoded:
-                        logger.info(f"[gallery-dl {name}] {decoded}")
-                        lines.append(decoded)
-                return '\n'.join(lines)
+            # Set destination
+            gallery_config.set((), 'base-directory', destination)
+            logger.info(f"Set gallery-dl base-directory to: {gallery_config.get((), 'base-directory', destination)}")
             
-            # Run both stdout and stderr readers concurrently
-            stdout_text, stderr_text = await asyncio.gather(
-                log_stream(process.stdout, "stdout"),
-                log_stream(process.stderr, "stderr")
-            )
+            # Cookie handling for Twitter/X
             
-            # Wait for process to complete
-            await process.wait()
+            from .api import database
+            domain = helpers.extract_domain(url)
+            if domain in ('x.com', 'twitter.com') and database:
+                print(f"Checking for cookies for domain: {domain}")
+                cookies = await database.get_cookies_for_domain(domain)
+                if cookies:
+                    gallery_config.set(('extractor', 'twitter'), 'cookies', cookies)
+                    logger.info(f"Using cookies for Twitter: {cookies}")
             
-            if process.returncode == 0:
-                # Read the folder path from the temp file
-                downloaded_folder = None
-                try:
-                    if path_file.exists():
-                        downloaded_folder = path_file.read_text(encoding='utf-8').strip()
-                        # Clean up the path
-                        downloaded_folder = helpers.clean_path(downloaded_folder)
-                        logger.info(f"Read folder path from temp file: {downloaded_folder}")
-                        # Clean up the temp file
-                        path_file.unlink()
-                    else:
-                        logger.warning(f"Temp path file not found: {path_file}")
-                except Exception as e:
-                    logger.error(f"Failed to read temp path file: {e}")
-                
-                logger.info(f"Downloaded: {url} → {downloaded_folder}")
-                return True, None, downloaded_folder
-            else:
-                error_msg = stderr_text or stdout_text
-                logger.error(f"Failed to download {url}: {error_msg}")
-                return False, error_msg, None
-                
+            # Create download job
+            j = job.DownloadJob(url)
+            
+            # Hook to capture the download directory
+            captured_dirs = []
+            def capture_directory(pathfmt):
+                captured_dirs.append(pathfmt.directory)
+            j.hooks = {"post": [capture_directory]}
+            
+            await asyncio.to_thread(j.run)
+            
+            downloaded_folder = captured_dirs[0] if captured_dirs else destination
+            logger.info(f"Downloaded: {url} → {downloaded_folder}")
+            return True, None, downloaded_folder
+            
         except Exception as e:
-            error_msg = f"Exception during download: {str(e)}"
-            logger.error(error_msg)
+            error_msg = str(e)
+            # Improve error messages for common cases
+            if "'Unavailable'" in error_msg or "Unavailable" in error_msg:
+                error_msg = "The content is not available. It may be private, deleted, or require authentication (e.g., login to Twitter/X)."
+            elif "No video could be found" in error_msg or "No images found" in error_msg:
+                error_msg = "No downloadable media found in this post. It may contain only text or unsupported content."
+            logger.error(f"Failed to download {url}: {error_msg}")
             return False, error_msg, None
     
     def find_gallery_metadata(self, destination: str) -> Optional[dict]:
@@ -335,6 +276,7 @@ class GalleryDownloader:
                 # Add the actual folder path (parent of info.json)
                 metadata['folder_path'] = str(latest_info.parent)
                 logger.info(f"Read metadata from {latest_info}: {metadata.get('title')}")
+                logger.info(f"Tags in metadata: {metadata.get('tags')}")
                 return metadata
                 
         except Exception as e:

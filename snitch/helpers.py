@@ -1,10 +1,16 @@
 """Utility helper functions for Snitch."""
 
+import asyncio
+import cmd
 import logging
+import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
+
+import yt_dlp
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +65,67 @@ def is_video_extension(filename: str) -> bool:
     video_extensions = {'.mp4', '.mov', '.avi', '.mkv', '.webm'}
     ext = Path(filename).suffix.lower()
     return ext in video_extensions
+    
+# Read and log output live
+async def log_stream(stream, name):
+    """Read from stream line by line and log it."""
+    lines = []
+    while True:
+        line = await stream.readline()
+        if not line:
+            break
+        decoded = line.decode('utf-8', errors='replace').rstrip()
+        if decoded:
+            logger.info(f"[yt-dlp {name}] {decoded}")
+            lines.append(decoded)
+    return '\n'.join(lines)
 
+# For checking URLs that do not contain the filename
+# We use yt-dlp library to check without subprocess
+async def is_video_url(url: str) -> bool:
+    """
+    Check if a URL is likely to be a video URL by attempting to extract info with yt-dlp.
+    
+    Args:
+        url: URL to check
+    """
+    logger.debug(f"Checking if URL is a video: {url}")
+    try:
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'simulate': True,
+            'skip_download': True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            await asyncio.to_thread(ydl.extract_info, url, download=False)
+        return True
+    except Exception as e:
+        logger.debug(f"yt-dlp check failed: {e}")
+        return False
+
+async def download_video_with_yt_dlp(url: str, folder_location: str) -> bool:
+    """
+    Download a video using yt-dlp library.
+
+    Args:
+        url: Video URL to download
+        folder_location: Folder to save the downloaded video and JSON metadata
+    """
+    logger.debug(f"Downloading video with yt-dlp: {url} -> {folder_location}")
+    try:
+        ydl_opts = {
+            'outtmpl': f'{folder_location}/%(title)s.%(ext)s',
+            'writeinfojson': True,
+            'no_warnings': True,
+            'quiet': True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            await asyncio.to_thread(ydl.download, [url])
+        return True
+    except Exception as e:
+        logger.error(f"yt-dlp download failed: {e}")
+        return False
 
 def extract_domain(url: str) -> Optional[str]:
     """

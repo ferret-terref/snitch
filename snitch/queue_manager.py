@@ -238,6 +238,10 @@ class QueueManager:
             gallery_title = metadata.get("title") if metadata else None
             gallery_tags = metadata.get("tags", []) if metadata else []
             
+            # If tags is a string, split by space or comma
+            if isinstance(gallery_tags, str):
+                gallery_tags = [tag.strip() for tag in gallery_tags.replace(',', ' ').split()]
+            
             # Get or create tags
             tag_ids = []
             if gallery_tags:

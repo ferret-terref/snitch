@@ -39,3 +39,6 @@ snitch.log
 # OS
 .DS_Store
 Thumbs.db
+
+# Other
+cookiefile.txt

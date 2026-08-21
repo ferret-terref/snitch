@@ -793,7 +793,8 @@ fragment VisualFileData on VisualFile {
             self,
             image_id: str,
             tag_ids: list[str],
-            page_url: Optional[str] = None
+            page_url: Optional[str] = None,
+            title: Optional[str] = None
         ) -> bool:
             """
             Tag an image in Stash by image_id and tag_ids.
@@ -810,6 +811,7 @@ fragment VisualFileData on VisualFile {
                     id
                     tags { id name }
                     url
+                    title
                 }
             }
             """
@@ -821,7 +823,8 @@ fragment VisualFileData on VisualFile {
             update_input = {
                 "id": image_id,
                 "tag_ids": tag_ids,
-                "url": url
+                "url": url,
+                "title": title
             }
 
             payload = {

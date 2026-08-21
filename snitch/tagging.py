@@ -17,7 +17,7 @@ class StashTagger:
         tag_ids = await self.ensure_tags(tag_names)
         await self.stash.update_gallery_with_tags(gallery_id, url or "", title, tag_ids)
 
-    async def tag_image_by_filename(self, filename: str, tag_names: List[str], page_url: Optional[str] = None) -> Optional[int]:
+    async def tag_image_by_filename(self, filename: str, tag_names: List[str], page_url: Optional[str] = None, title: Optional[str] = None) -> Optional[int]:
         """
         Find image by filename and tag it with the given tags.
         """
@@ -28,7 +28,7 @@ class StashTagger:
         
         if image:
             image_id = image["id"]
-            success = await self.stash.tag_image(image_id, tag_ids, page_url)
+            success = await self.stash.tag_image(image_id, tag_ids, page_url, title)
             return image_id if success else None
         return None
     

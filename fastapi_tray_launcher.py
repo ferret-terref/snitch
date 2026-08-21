@@ -3,6 +3,7 @@ import os
 import sys
 import threading
 import traceback
+import winreg as reg
 
 from PIL import Image, ImageDraw
 from pystray import Icon, Menu, MenuItem
@@ -32,6 +33,64 @@ def stop_server(icon, item):
     log("Stopping server and exiting...")
     # No direct way to stop uvicorn from another thread; recommend closing from tray and letting process exit
     icon.stop()
+
+def is_in_startup():
+    """Check if the app is registered to run on startup."""
+    try:
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        key = reg.OpenKey(reg.HKEY_CURRENT_USER, key_path, 0, reg.KEY_READ)
+        try:
+            reg.QueryValueEx(key, "Snitch")
+            reg.CloseKey(key)
+            return True
+        except FileNotFoundError:
+            reg.CloseKey(key)
+            return False
+    except Exception as e:
+        log(f"Error checking startup status: {e}")
+        return False
+
+def add_to_startup():
+    """Add the app to Windows startup."""
+    try:
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        exe_path = sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__)
+        
+        key = reg.OpenKey(reg.HKEY_CURRENT_USER, key_path, 0, reg.KEY_SET_VALUE)
+        reg.SetValueEx(key, "Snitch", 0, reg.REG_SZ, exe_path)
+        reg.CloseKey(key)
+        log(f"Added to startup: {exe_path}")
+        return True
+    except Exception as e:
+        log(f"Failed to add to startup: {e}")
+        return False
+
+def remove_from_startup():
+    """Remove the app from Windows startup."""
+    try:
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        key = reg.OpenKey(reg.HKEY_CURRENT_USER, key_path, 0, reg.KEY_SET_VALUE)
+        reg.DeleteValue(key, "Snitch")
+        reg.CloseKey(key)
+        log("Removed from startup")
+        return True
+    except FileNotFoundError:
+        log("App was not in startup")
+        return True
+    except Exception as e:
+        log(f"Failed to remove from startup: {e}")
+        return False
+
+def toggle_startup(icon, item):
+    """Toggle the startup setting."""
+    if is_in_startup():
+        if remove_from_startup():
+            log("Startup disabled")
+    else:
+        if add_to_startup():
+            log("Startup enabled")
+    # Update the menu to reflect the new state
+    icon.update_menu()
 
 def create_image():
     try:
@@ -63,6 +122,7 @@ def main():
             'FastAPI Server',
             create_image(),
             menu=Menu(
+                MenuItem('Launch on Startup', toggle_startup, checked=lambda item: is_in_startup()),
                 MenuItem('Stop Server and Exit', stop_server)
             )
         )

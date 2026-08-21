@@ -7,11 +7,20 @@ server:
 
 # Download folders - gallery-dl will create site/gallery subfolders within these
 download_folders:
+  # Each folder must specify a `type`: Images, Scenes, or Gallery
   - name: "Primary"
     path: "/path/to/galleries"
+    type: "Gallery"
     default: true
-  - name: "Archive"
-    path: "/path/to/archive/galleries"
+
+  - name: "Images"
+    path: "/path/to/images"
+    type: "Images"
+    default: false
+
+  - name: "Scenes"
+    path: "/path/to/scenes"
+    type: "Scenes"
     default: false
 
 # gallery-dl settings

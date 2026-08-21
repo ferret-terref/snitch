@@ -1,5 +1,8 @@
 """Configuration management."""
 
+import os
+import sys
+from enum import Enum as _Enum
 from pathlib import Path
 from typing import Optional
 
@@ -12,9 +15,16 @@ class ServerConfig(BaseModel):
     port: int = Field(default="8080")
 
 
+class FolderType(_Enum):
+    Images = "Images"
+    Scenes = "Scenes"
+    Gallery = "Gallery"
+
+
 class DownloadFolder(BaseModel):
     name: str
     path: str
+    type: FolderType = FolderType.Images
     default: bool = False
 
 
@@ -55,17 +65,38 @@ class Config(BaseModel):
     queue: QueueConfig = Field(default_factory=QueueConfig)
 
 
+def get_executable_dir() -> Path:
+    """Get the directory where the executable or script is located."""
+    if getattr(sys, 'frozen', False):
+        # Running as compiled executable
+        return Path(sys.executable).parent
+    else:
+        # Running as script
+        return Path(__file__).parent.parent
+
+
 def load_config(config_path: str = "config.yaml") -> Config:
     """Load configuration from YAML file."""
+    # If relative path, make it relative to executable directory
     path = Path(config_path)
+    if not path.is_absolute():
+        path = get_executable_dir() / config_path
     
     if not path.exists():
         raise FileNotFoundError(
-            f"Config file not found: {config_path}\n"
+            f"Config file not found: {path}\n"
             "Copy config.example.yaml to config.yaml and edit it."
         )
     
     with open(path, "r") as f:
         data = yaml.safe_load(f)
     
-    return Config(**data)
+    # Make relative database path absolute relative to executable
+    config = Config(**data)
+    if not Path(config.database.path).is_absolute():
+        config.database.path = str(get_executable_dir() / config.database.path)
+    
+    if not Path(config.logging.file).is_absolute():
+        config.logging.file = str(get_executable_dir() / config.logging.file)
+    
+    return config
