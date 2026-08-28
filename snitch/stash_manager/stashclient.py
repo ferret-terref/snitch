@@ -193,9 +193,6 @@ class StashClient:
             }
         }
         
-        from pprint import pprint
-        pprint(payload, indent=2)
-        
         response = await self.__do_graphql_request(payload)
         if response.get("errors"):
             logger.error(f"Failed to tag image: {response['errors']}")
@@ -228,7 +225,7 @@ class StashClient:
         for img in images:
             for vf in img.get("visual_files", []):
                 if filename in vf.get("path", ""):
-                    logger.info(f"Found image, {img}")
+                    #logger.info(f"Found image, {img}")
                     return img
                 
         return None
@@ -254,7 +251,6 @@ class StashClient:
             }
         }
         
-        print(payload)
         response = await self.__do_graphql_request(payload)
         if response.get("errors"):
                 logger.error(f"Failed to tag image: {response['errors']}")
@@ -344,8 +340,7 @@ class StashClient:
                 }
             }
         }
-        from pprint import pprint
-        pprint(payload)
+        
         response = await self.__do_graphql_request(payload)
         
         return True

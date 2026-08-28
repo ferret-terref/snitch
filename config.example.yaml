@@ -41,12 +41,12 @@ stashapp:
 
 # Database
 database:
-  path: "snitch.db"
+  path: "./data/snitch.db"
 
 # Logging
 logging:
   level: "INFO"  # DEBUG, INFO, WARNING, ERROR
-  file: "snitch.log"
+  file: "./data/snitch.log"
 
 # Queue Settings
 queue:

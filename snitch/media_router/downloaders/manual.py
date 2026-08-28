@@ -33,7 +33,6 @@ class ManualDownloader(Downloader):
             from snitch.config import FolderType
             from snitch.media_router.utils.urls import (is_image_url,
                                                         is_video_url)
-
             preferred = None
             if is_image_url(url):
                 preferred = FolderType.Images
@@ -46,13 +45,15 @@ class ManualDownloader(Downloader):
         return UnsupportedDomain(cls.name, url)
 
     @classmethod
-    async def download(cls, url: str, output_dir: str) -> str:
+    async def download(cls, url: str, output_dir: str, scan_only: bool) -> str:
         if not is_direct_media_url(url):
             raise MediaRouterError("Manual downloader only supports direct media URLs")
 
         output_path = cls._resolve_output_path(output_dir, url)
-        headers = await cls._build_headers(url)
-        await cls._download_with_retries(url, headers, output_path)
+        if (scan_only == False):
+            headers = await cls._build_headers(url)
+            await cls._download_with_retries(url, headers, output_path)
+            
         return extract_filename_from_url(url, default="downloaded_file")
 
     @classmethod
@@ -67,6 +68,8 @@ class ManualDownloader(Downloader):
         headers = build_default_headers(referer=url)
         cookies = await cls._get_cookies(url)
         if cookies:
+            logger.info("Found cookies - using")
+            logger.info(cookies)
             headers["Cookie"] = format_cookies_header(cookies)
         return headers
 
@@ -148,7 +151,11 @@ class ManualDownloader(Downloader):
             async with session.get(url, headers=headers) as resp:
                 content_type = resp.headers.get("Content-Type", "").lower()
                 content_length = resp.headers.get("Content-Length")
-
+                
+                if (content_length is None or content_length == 0):
+                    logger.info("Failed to download - content_length was %s", content_length)
+                    raise MediaRouterError(f"Content Length was {content_length}")
+                    
                 if resp.status not in {200, 206}:
                     text = await resp.text()
                     if is_cloudflare_block(resp.status, text, resp.headers):

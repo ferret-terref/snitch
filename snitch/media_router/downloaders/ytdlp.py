@@ -58,7 +58,7 @@ class YtDlpDownloader(Downloader):
             return ProbeError(cls.name, url, exc)
     
     @classmethod
-    async def download(cls, url: str, output_dir: str) -> str:
+    async def download(cls, url: str, output_dir: str, scan_only: bool) -> str:
         if YoutubeDL is None:
             raise MediaRouterError("yt-dlp is not installed")
 

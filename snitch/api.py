@@ -11,17 +11,15 @@ from fastapi import Body, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
+from snitch.media_router.utils.urls import extract_filename_from_url
+
 from . import helpers
 from .config import Config, DownloadFolder, FolderType
 from .database import Database
-from .downloader import GalleryDownloader
 from .media_router import DownloadManager
-from .models import (CookieSetRequest, DownloadItem, DownloadRequest,
-                     DownloadResponse, DownloadTestResponse, HistoryResponse,
-                     QueueResponse, StashScanRequest, StashUpdateRequest,
-                     StashUpdateResponse)
-from .queue_manager import QueueManager
-from .stash import StashClient
+from .models import (CookieSetRequest, DownloadRequest, DownloadResponse,
+                     DownloadTestResponse, HistoryResponse, QueueResponse,
+                     StashScanRequest, StashUpdateRequest, StashUpdateResponse)
 from .stash_manager.stashmananger import StashManager
 
 
@@ -30,14 +28,11 @@ async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     # Startup
     await database.initialize()
-    await queue_manager.start()
     stash_manager.start()
     logger.info("Snitch started on port %s", config.server.port)
     
     yield
     
-    # Shutdown
-    await queue_manager.stop()
     stash_manager.stop()
     logger.info("Snitch stopped")
 
@@ -46,9 +41,6 @@ logger = logging.getLogger(__name__)
 # Global instances
 config: Optional[Config] = None
 database: Optional[Database] = None
-downloader: Optional[GalleryDownloader] = None
-queue_manager: Optional[QueueManager] = None
-stash_client: Optional[StashClient] = None
 
 stash_manager: Optional[StashManager] = None
 
@@ -97,95 +89,11 @@ async def get_favicon():
     else:
         raise HTTPException(status_code=404, detail="Favicon not found")
 
-# Backwards compatible endpoint
-##@app.post("/api/image/download", response_model=DownloadResponse)
-##async def submit_image_download(request: DownloadRequest):
-##    """Deprecated: Use /api/download instead."""
-##    logger.warning("Deprecated endpoint /api/image/download used; redirecting to /api/download")
-##    return await submit_download(request)
-##
-##@app.post("/api/download", response_model=DownloadResponse)
-##async def submit_download(request: DownloadRequest):
-##    """
-##    Unified download endpoint supporting:
-##    - Gallery URLs (gallery-dl)
-##    - Single image URLs (direct download)
-##    - Bulk operations
-##    """
-##    # Determine which folder to use
-##    folder = _resolve_folder(request.folder)
-##    
-##    # Add jobs to queue
-##    added = 0
-##    skipped = 0
-##    duplicates = []
-##    errors = []
-##    
-##    for item in request.items:
-##        try:
-##            # Detect if this is a direct image URL or gallery URL
-##            if helpers.is_direct_image_url(item.url):
-##                # Handle as single image download
-##                result = await _handle_single_image(item, folder)
-##                if result["success"]:
-##                    added += 1
-##                    logger.info(f"Downloaded image: {item.url}")
-##                else:
-##                    skipped += 1
-##                    errors.append({
-##                        "url": item.url,
-##                        "error": result.get("error", "Unknown error")
-##                    })
-##            elif (await helpers.is_video_url(item.url)):
-##                # do yt-dlp download
-##                result = await helpers.download_video_with_yt_dlp(item.url, folder.path)
-##                if (result == True):
-##                    # start stash scan
-##                    if stash_client:
-##                        scan_paths = _get_scan_paths(request.folder)
-##                        job_id = await stash_client.trigger_scan(paths=scan_paths)
-##                        logger.info(f"Triggered Stash scan for video download: {item.url} (job_id: {job_id})")
-##                        added += 1
-##                else:
-##                    skipped += 1
-##                    errors.append({
-##                        "url": item.url,
-##                        "error": result if isinstance(result, str) else "Unknown error during video download"
-##                    })
-##            else:
-##                # Handle as gallery download
-##                existing = await database.check_existing_download(item.url)
-##                if existing:
-##                    skipped += 1
-##                    duplicates.append({
-##                        "url": item.url,
-##                        "status": existing.status,
-##                        "downloaded_at": existing.completed_at.isoformat() if existing.completed_at else None
-##                    })
-##                    logger.info(f"Skipping duplicate URL: {item.url} (status: {existing.status})")
-##                else:
-##                    job_id = await database.add_download(item.url, folder.name, folder.path)
-##                    added += 1
-##                    logger.info(f"Added download job {job_id} for {item.url}")
-##        except Exception as e:
-##            logger.error(f"Failed to process {item.url}: {e}")
-##            errors.append({
-##                "url": item.url,
-##                "error": str(e)
-##            })
-##    
-##    return DownloadResponse(
-##        added=added,
-##        skipped=skipped,
-##        duplicates=duplicates,
-##        errors=errors if errors else None
-##    )
-##
-
 @app.post("/api/v2/download", response_model=Union[DownloadResponse, DownloadTestResponse])
 async def submit_download_v2(
     request: DownloadRequest,
     test_mode: bool = Query(False, description="If true, resolve downloaders without executing downloads."),
+    scan_only: bool = Query(False, description="If true, scan selected folders only")
 ):
     """Unified download endpoint using the new media router."""
     # If a folder override was provided, resolve it once; otherwise we'll select per-item.
@@ -237,19 +145,25 @@ async def submit_download_v2(
                     "folder": target_folder.name,
                 })
             else:
+                identifier = await downloader_cls.download(item.url, target_folder.path, scan_only)
+                                
                 # Filename or output directory
-                identifier = await downloader_cls.download(item.url, target_folder.path)
+                if (scan_only):
+                    logger.info(f"Found {identifier}: {target_folder.path}")
+                else:
+                    logger.info(f"Downloaded {item.url} with {downloader_cls.name}: {probe_result.reason} -> {target_folder.path}")
+                    
                 added += 1
-                logger.info(f"Downloaded {item.url} with {downloader_cls.name}: {probe_result.reason} -> {target_folder.path}")
                 
                 # Trigger stash import
-                logger.info(f"Identifier is {identifier}, downloading to {target_folder.path} ({target_folder.type})")
+                logger.info(f"Identifier is {identifier}, located in {target_folder.path} ({target_folder.type})")
                 
                 source_url = item.page_url or item.url ## Use one or the other
                 if target_folder.type == FolderType.Gallery:
                     gallery_folder = target_folder.path # Get the folder galleries are saved in
                     gallery_name = Path(identifier).resolve().name ## Get the name of the gallery
-                    asyncio.create_task(stash_manager.import_gallery(identifier, gallery_folder, item.tags, source_url, item.title))
+                    gallery_tags = item.tags or helpers.get_tags_from_gallery_json(identifier)
+                    asyncio.create_task(stash_manager.import_gallery(identifier, gallery_folder, gallery_tags, source_url, item.title))
                 
                 elif target_folder.type == FolderType.Images:
                     asyncio.create_task(stash_manager.import_image(identifier, target_folder.path, item.tags, source_url, item.title))
@@ -279,60 +193,61 @@ async def submit_download_v2(
         errors=errors if errors else None,
     )
 
-@app.post("/api/stash/update", response_model=StashUpdateResponse)
-async def update_stash_metadata(
-    request: StashUpdateRequest = Body(...),
-    scan_first: bool = False
-):
-    """
-    Update image metadata in Stash (tags, URL) without downloading.
-    Optionally trigger a scan first to ensure the image is indexed.
-    """
-    if not stash_client:
-        raise HTTPException(status_code=400, detail="StashApp integration not enabled")
-
-    # Optionally scan first
-    if scan_first:
-        scan_paths = _get_scan_paths(request.folder)
-        job_id = await stash_client.trigger_scan(paths=scan_paths)
-        if job_id:
-            await stash_client.wait_for_scan_completion(job_id, timeout=300)
-
-    # Extract filename from URL
-    item = request.items[0]  # Assuming single item for update
-    filename = item.url.split("/")[-1].split("?")[0]
-    if not filename:
-        raise HTTPException(status_code=400, detail="Could not extract filename from URL")
-
-    logger.info(f"Updating Stash image metadata for filename: {filename}")
-
-    # Find and update image in Stash
-    try:
-        image = await stash_client.find_image_by_filename(filename)
-        if not image:
-            raise HTTPException(status_code=404, detail=f"Image not found in Stash: {filename}")
-        
-        image_id = image["id"]
-        logger.info(f"Found Stash image ID: {image_id}")
-        
-        tag_ids = await stash_client.get_or_create_tags(item.tags or [])
-        
-        # Update image with tags and url (page_url)
-        success = await stash_client.tag_image(image_id, tag_ids, item.page_url, item.title)
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to update image in Stash")
-        
-        return StashUpdateResponse(
-            success=True,
-            image_id=image_id,
-            tags=item.tags or [],
-            page_url=item.page_url
-        )
-    except HTTPException:
-        raise
-    except Exception as ex:
-        logger.error(f"Failed to update Stash image: {ex}")
-        raise HTTPException(status_code=500, detail=str(ex))
+#   TODO: Implement stash update in new code base
+#@app.post("/api/stash/update", response_model=StashUpdateResponse)
+#async def update_stash_metadata(
+#    request: StashUpdateRequest = Body(...),
+#    scan_first: bool = False
+#):
+#    """
+#    Update image metadata in Stash (tags, URL) without downloading.
+#    Optionally trigger a scan first to ensure the image is indexed.
+#    """
+#    if not stash_client:
+#        raise HTTPException(status_code=400, detail="StashApp integration not enabled")
+#
+#    # Optionally scan first
+#    if scan_first:
+#        scan_paths = _get_scan_paths(request.folder)
+#        job_id = await stash_client.trigger_scan(paths=scan_paths)
+#        if job_id:
+#            await stash_client.wait_for_scan_completion(job_id, timeout=300)
+#
+#    # Extract filename from URL
+#    item = request.items[0]  # Assuming single item for update
+#    filename = item.url.split("/")[-1].split("?")[0]
+#    if not filename:
+#        raise HTTPException(status_code=400, detail="Could not extract filename from URL")
+#
+#    logger.info(f"Updating Stash image metadata for filename: {filename}")
+#
+#    # Find and update image in Stash
+#    try:
+#        image = await stash_client.find_image_by_filename(filename)
+#        if not image:
+#            raise HTTPException(status_code=404, detail=f"Image not found in Stash: {filename}")
+#        
+#        image_id = image["id"]
+#        logger.info(f"Found Stash image ID: {image_id}")
+#        
+#        tag_ids = await stash_client.get_or_create_tags(item.tags or [])
+#        
+#        # Update image with tags and url (page_url)
+#        success = await stash_client.tag_image(image_id, tag_ids, item.page_url, item.title)
+#        if not success:
+#            raise HTTPException(status_code=500, detail="Failed to update image in Stash")
+#        
+#        return StashUpdateResponse(
+#            success=True,
+#            image_id=image_id,
+#            tags=item.tags or [],
+#            page_url=item.page_url
+#        )
+#    except HTTPException:
+#        raise
+#    except Exception as ex:
+#        logger.error(f"Failed to update Stash image: {ex}")
+#        raise HTTPException(status_code=500, detail=str(ex))
 
 @app.get("/api/queue", response_model=QueueResponse)
 async def get_queue():
@@ -417,40 +332,41 @@ async def get_folders():
         ]
     }
 
-@app.post("/api/stash/scan")
-async def trigger_stash_scan(request: StashScanRequest = Body(...)):
-    """
-    Manually trigger a StashApp library scan.
-    
-    Args:
-        request: Scan configuration with paths and scan_all flag.
-    """
-    if not stash_client:
-        raise HTTPException(
-            status_code=400,
-            detail="StashApp integration not enabled"
-        )
-    
-    # Determine which paths to scan
-    scan_paths = request.paths
-    if not scan_paths and not request.scan_all:
-        # Default to configured download folders
-        scan_paths = [f.path for f in config.download_folders]
-    
-    stash_job_id = await stash_client.trigger_scan(paths=scan_paths if not request.scan_all else None)
-    
-    if stash_job_id:
-        if request.scan_all:
-            return {"message": "StashApp full scan triggered (all paths)", "job_id": stash_job_id}
-        elif scan_paths:
-            return {"message": f"StashApp selective scan triggered for {len(scan_paths)} path(s)", "job_id": stash_job_id}
-        else:
-            return {"message": "StashApp scan triggered", "job_id": stash_job_id}
-    else:
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to trigger StashApp scan"
-        )
+#   TODO: Implement stash scan in new code base
+#@app.post("/api/stash/scan")
+#async def trigger_stash_scan(request: StashScanRequest = Body(...)):
+#    """
+#    Manually trigger a StashApp library scan.
+#    
+#    Args:
+#        request: Scan configuration with paths and scan_all flag.
+#    """
+#    if not stash_client:
+#        raise HTTPException(
+#            status_code=400,
+#            detail="StashApp integration not enabled"
+#        )
+#    
+#    # Determine which paths to scan
+#    scan_paths = request.paths
+#    if not scan_paths and not request.scan_all:
+#        # Default to configured download folders
+#        scan_paths = [f.path for f in config.download_folders]
+#    
+#    stash_job_id = await stash_client.trigger_scan(paths=scan_paths if not request.scan_all else None)
+#    
+#    if stash_job_id:
+#        if request.scan_all:
+#            return {"message": "StashApp full scan triggered (all paths)", "job_id": stash_job_id}
+#        elif scan_paths:
+#            return {"message": f"StashApp selective scan triggered for {len(scan_paths)} path(s)", "job_id": stash_job_id}
+#        else:
+#            return {"message": "StashApp scan triggered", "job_id": stash_job_id}
+#    else:
+#        raise HTTPException(
+#            status_code=500,
+#            detail="Failed to trigger StashApp scan"
+#        )
 
 # ===== Helper Functions =====
 
@@ -474,27 +390,6 @@ def _resolve_folder(folder_name: Optional[str]) -> DownloadFolder:
             raise HTTPException(status_code=500, detail="No download folders configured")
     return folder
 
-async def _handle_single_image(
-    item: DownloadItem,
-    folder: DownloadFolder
-) -> dict:
-    """Handle single image download."""
-    from .downloader import download_image_direct
-    
-    try:
-        result = await download_image_direct(
-            url=item.url,
-            folder=folder.path,
-            tags=item.tags,
-            page_url=item.page_url,
-            title=item.title
-        )
-        return {"success": True, **result}
-    except Exception as e:
-        logger.error(f"Single image download failed: {e}")
-        return {"success": False, "error": str(e)}
-
-
 def _get_scan_paths(folder_name: Optional[str]) -> Optional[list[str]]:
     """Get scan paths for Stash based on folder name."""
     if folder_name:
@@ -504,10 +399,6 @@ def _get_scan_paths(folder_name: Optional[str]) -> Optional[list[str]]:
         return [folder_name]  # Treat as direct path
     # Default: all download folders
     return [f.path for f in config.download_folders]
-
-
-
-
 
 # ===== Cookie API endpoints =====
 
@@ -534,25 +425,11 @@ async def delete_cookie(domain: str = Query(...), cookie_name: str = Query(...))
 
 def create_app(cfg: Config) -> FastAPI:
     """Create and configure the FastAPI app."""
-    global config, database, downloader, queue_manager, stash_client, stash_manager
+    global config, database, stash_manager
     
     config = cfg
     database = Database(config.database.path)
-    downloader = GalleryDownloader(config.gallery_dl)
-    
-    if config.stashapp.enabled:
-        stash_client = StashClient(config.stashapp.url, config.stashapp.api_key)
-    
     stash_manager = StashManager(config.stashapp.url, config.stashapp.api_key)
-    
-    queue_manager = QueueManager(
-        database, 
-        downloader, 
-        stash_client,
-        max_concurrent=config.queue.max_concurrent_downloads,
-        scan_batch_size=config.queue.scan_batch_size,
-        scan_batch_timeout=config.queue.scan_batch_timeout
-    )
     
     return app
 

@@ -75,7 +75,7 @@ def get_executable_dir() -> Path:
         return Path(__file__).parent.parent
 
 
-def load_config(config_path: str = "config.yaml") -> Config:
+def load_config(config_path: str = "/data/config.yaml") -> Config:
     """Load configuration from YAML file."""
     # If relative path, make it relative to executable directory
     path = Path(config_path)

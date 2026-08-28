@@ -24,7 +24,7 @@ class Downloader(abc.ABC):
 
     @classmethod
     @abc.abstractmethod
-    async def download(cls, url: str, output_dir: str) -> str:
+    async def download(cls, url: str, output_dir: str, scan_only: bool) -> str:
         """
         Download media from the URL into the output directory.
         

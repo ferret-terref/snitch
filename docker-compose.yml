@@ -1,0 +1,9 @@
+services:
+ snitch:
+    build: .
+    container_name: snitch
+    ports:
+      - "9998:3000"
+    volumes:
+      - ./data:/data
+    restart: always

@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import ClassVar
 
 from snitch.config import FolderType
-from snitch.media_router.probes.gallerydl import is_gallerydl_url
+from snitch.media_router.probes.gallerydl import (is_booru_collection,
+                                                  is_gallerydl_url)
 
 from ..exceptions import MediaRouterError
 from ..models import (ModuleNotInstalled, ProbeResult, SupportedDomain,
@@ -51,10 +52,54 @@ class GalleryDlDownloader(Downloader):
         if is_gallerydl_url(url):
             return SupportedDomain(cls.name, url, preferred_folder=getattr(cls, "_preferred_folder_type", None))
 
-        return UnsupportedDomain(cls.name, url)
+        if is_booru_collection(url):
+            return SupportedDomain(cls.name, url, preferred_folder=getattr(cls, "_preferred_folder_type", None))
         
+        if cls.simulateDownload(url, "./temp"):
+            return SupportedDomain(cls.name, url, preferred_folder=getattr(cls, "_preferred_folder_type", None))
+        
+        return UnsupportedDomain(cls.name, url)
+    
     @classmethod
-    async def download(cls, url: str, output_dir: str) -> str:
+    async def simulateDownload(cls, url: str, output_dir: str) -> str:
+        
+        gallery_config.load()
+        gallery_config.default()
+        gallery_config.set((), "base-directory", output_dir)
+        gallery_config.set((), "cookies", "cookiefile.txt")
+        gallery_config.set((), "simulate", True)
+        gallery_config.set((), "range", 1)
+        gallery_config.set((), "sleep-request", 0)
+        gallery_config.set(("extractor",), "postprocessors", [{
+            "name": "metadata",
+            "event": "prepare",
+        }])
+        
+    
+        buffer = io.StringIO()
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+
+        sys.stdout = buffer
+        sys.stderr = buffer
+
+        try:
+            job = gallery_job.DownloadJob(url)
+            job.run()
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+            
+    
+        output = buffer.getvalue()
+        if ("error" not in output):
+            return True
+        
+        return False
+
+    
+    @classmethod
+    async def download(cls, url: str, output_dir: str, scan_only: bool) -> str:
         if gallery_job is None or gallery_config is None:
             raise MediaRouterError("gallery-dl is not installed")
 
@@ -64,8 +109,14 @@ class GalleryDlDownloader(Downloader):
             from pathlib import Path
 
             gallery_config.load()
+            gallery_config.default()
             gallery_config.set((), "base-directory", output_dir)
-
+            gallery_config.set((), "cookies", "cookiefile.txt")
+            gallery_config.set(("extractor",), "postprocessors", [{
+                "name": "metadata",
+                "event": "prepare",
+            }])
+            
             buffer = io.StringIO()
             old_stdout = sys.stdout
             old_stderr = sys.stderr
